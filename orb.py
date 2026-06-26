@@ -1,145 +1,162 @@
 import cv2
 import numpy as np
+import time
 
-# ==========================================
-# 1. INISIALISASI & PERSIAPAN TEMPLATE
-# ==========================================
-# Inisialisasi detektor ORB. 
-# nfeatures=1000 agar lebih banyak titik sudut yang terdeteksi
-orb = cv2.ORB_create(nfeatures=1000)
+def main():
+    # --- 1. PATH GAMBAR REFERENSI ---
+    ref_image_path = 'image/template-uang.png'
 
-# Inisialisasi Brute-Force Matcher dengan NORM_HAMMING (Wajib untuk ORB/Binary Descriptor)
-# crossCheck=True akan otomatis menyaring kecocokan bolak-balik yang paling valid
-bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
+    # --- 2. INISIALISASI ORB & MATCHER ---
+    orb = cv2.ORB_create(nfeatures=500)
+    bf  = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
 
-# Load gambar template referensi
-img_ref = cv2.imread('image/template-uang.png')
+    # --- 3. PROSES GAMBAR REFERENSI ---
+    ref_img_color = cv2.imread(ref_image_path)
+    if ref_img_color is None:
+        print(f"Error: Tidak dapat menemukan file referensi di '{ref_image_path}'")
+        return
 
-if img_ref is None:
-    print("Error: Gambar template_uang tidak ditemukan!")
-    exit()
+    CAM_W, CAM_H = 640, 480
 
-# ==========================================
-# TAMBAHAN BARU: Perkecil resolusi gambar template dan buat horizontal
-# ==========================================
-tinggi_asli, lebar_asli = img_ref.shape[:2]
+    # Putar gambar menjadi horizontal jika orientasinya vertikal (tinggi > lebar)
+    tinggi_asli, lebar_asli = ref_img_color.shape[:2]
+    if tinggi_asli > lebar_asli:
+        ref_img_color = cv2.rotate(ref_img_color, cv2.ROTATE_90_COUNTERCLOCKWISE)
+        tinggi_asli, lebar_asli = ref_img_color.shape[:2]
+    
+    # Mengecilkan gambar menjadi lebar 400 piksel agar proporsional sebagai referensi
+    rasio = 400 / lebar_asli
+    REF_W = 400
+    REF_H = int(tinggi_asli * rasio)
+    ref_img_color = cv2.resize(ref_img_color, (REF_W, REF_H), interpolation=cv2.INTER_AREA)
 
-# Putar gambar menjadi horizontal jika orientasinya vertikal (tinggi > lebar)
-if tinggi_asli > lebar_asli:
-    img_ref = cv2.rotate(img_ref, cv2.ROTATE_90_COUNTERCLOCKWISE)
-    tinggi_asli, lebar_asli = img_ref.shape[:2] # Update dimensi setelah rotasi
+    ref_gray        = cv2.cvtColor(ref_img_color, cv2.COLOR_BGR2GRAY)
+    kp_ref, des_ref = orb.detectAndCompute(ref_gray, None)
 
-# Mengecilkan gambar menjadi lebar 400 piksel agar proporsional sebagai referensi
-rasio = 400 / lebar_asli
-dimensi_baru = (400, int(tinggi_asli * rasio))
-img_ref = cv2.resize(img_ref, dimensi_baru, interpolation=cv2.INTER_AREA)
-# ==========================================
+    if des_ref is None:
+        print("Error: Tidak ada fitur yang ditemukan pada gambar referensi.")
+        return
 
-# --- PREPROCESSING TEMPLATE (Materi Dosen) ---
-# 1. Grayscale
-gray_ref = cv2.cvtColor(img_ref, cv2.COLOR_BGR2GRAY)
-# ... (kode selanjutnya tetap sama)
+    # --- 4. AKTIFKAN KAMERA ---
+    cap = cv2.VideoCapture(0)
+    if not cap.isOpened():
+        print("Error: Tidak dapat mengakses kamera.")
+        return
 
-if img_ref is None:
-    print("Error: Gambar template_uang.jpg tidak ditemukan! Pastikan nama dan lokasi file benar.")
-    exit()
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH,  CAM_W)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAM_H)
 
-# --- PREPROCESSING TEMPLATE (Materi Dosen) ---
-# 1. Grayscale
-gray_ref = cv2.cvtColor(img_ref, cv2.COLOR_BGR2GRAY)
-# 2. CLAHE (Contrast Limited Adaptive Histogram Equalization)
-clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
-gray_ref = clahe.apply(gray_ref)
+    print("Kamera aktif. Arahkan kamera ke objek referensi.")
+    print("Tekan 'q' untuk keluar.")
 
-# Ekstrak Keypoints (kp) dan Descriptors (des) dari Template
-kp_ref, des_ref = orb.detectAndCompute(gray_ref, None)
+    font       = cv2.FONT_HERSHEY_SIMPLEX
+    COLOR_G    = (0, 255, 0)
+    COLOR_Y    = (0, 255, 255)
+    COLOR_O    = (0, 165, 255)
+    draw_flags = cv2.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS
 
-# Ambil dimensi template untuk menggambar Bounding Box nanti
-h, w = gray_ref.shape
-template_pts = np.float32([[0, 0], [0, h - 1], [w - 1, h - 1], [w - 1, 0]]).reshape(-1, 1, 2)
+    prev_time = 0
 
-# ==========================================
-# 2. MULAI VIDEO TRACKING (WEBCAM)
-# ==========================================
-cap = cv2.VideoCapture(0)
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            print("Gagal mengambil frame.")
+            break
 
-print("Kamera aktif. Tekan 'q' pada jendela video untuk keluar.")
+        current_time = time.time()
+        fps = 1 / (current_time - prev_time) if prev_time > 0 else 0
+        prev_time = current_time
 
-while True:
-    ret, frame = cap.read()
-    if not ret:
-        print("Gagal mengambil frame dari kamera.")
-        break
+        frame = cv2.resize(frame, (CAM_W, CAM_H))
+        gray  = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-    # Flip frame secara horizontal agar menjadi cermin (mirror)
-    frame = cv2.flip(frame, 1)
+        # --- 5. FILTERING ---
+        gaussian_filtered  = cv2.GaussianBlur(gray, (15, 15), 0)
+        bilateral_filtered = cv2.bilateralFilter(gray, 9, 75, 75)
 
-    # --- PREPROCESSING FRAME KAMERA ---
-    # 1. Grayscale
-    gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    # 2. CLAHE untuk mengatasi pantulan cahaya / redup
-    gray_frame = clahe.apply(gray_frame)
-    # 3. Gaussian Blur ringan untuk mengurangi noise sensor kamera
-    gray_frame = cv2.GaussianBlur(gray_frame, (5, 5), 0)
+        # --- 6. DETEKSI & MATCHING ---
+        kp_gauss, des_gauss = orb.detectAndCompute(gaussian_filtered, None)
+        good_gauss = []
+        inlier_ratio_gauss = 0.0
+        if des_gauss is not None:
+            m = bf.match(des_ref, des_gauss)
+            m = sorted(m, key=lambda x: x.distance)
+            good_gauss = m[:50]
+            if len(good_gauss) > 10:
+                src_pts = np.float32([kp_ref[m.queryIdx].pt for m in good_gauss]).reshape(-1, 1, 2)
+                dst_pts = np.float32([kp_gauss[m.trainIdx].pt for m in good_gauss]).reshape(-1, 1, 2)
+                M, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
+                if M is not None:
+                    inliers = np.sum(mask)
+                    inlier_ratio_gauss = (inliers / len(good_gauss)) * 100
 
-    # Ekstrak fitur dari frame kamera saat ini
-    kp_frame, des_frame = orb.detectAndCompute(gray_frame, None)
+        kp_bilateral, des_bilateral = orb.detectAndCompute(bilateral_filtered, None)
+        good_bilateral = []
+        inlier_ratio_bilateral = 0.0
+        if des_bilateral is not None:
+            m = bf.match(des_ref, des_bilateral)
+            m = sorted(m, key=lambda x: x.distance)
+            good_bilateral = m[:50]
+            if len(good_bilateral) > 10:
+                src_pts = np.float32([kp_ref[m.queryIdx].pt for m in good_bilateral]).reshape(-1, 1, 2)
+                dst_pts = np.float32([kp_bilateral[m.trainIdx].pt for m in good_bilateral]).reshape(-1, 1, 2)
+                M, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
+                if M is not None:
+                    inliers = np.sum(mask)
+                    inlier_ratio_bilateral = (inliers / len(good_bilateral)) * 100
 
-    # Pastikan descriptor ditemukan sebelum melakukan pencocokan
-    if des_frame is not None and len(des_frame) > 0:
+        # --- 7. BUAT PANEL MATCHING (ref kecil kiri | cam kanan) ---
+        match_gauss = cv2.drawMatches(
+            ref_img_color, kp_ref,
+            frame, kp_gauss,
+            good_gauss, None,
+            matchColor=COLOR_G, flags=draw_flags
+        )
+        match_bilateral = cv2.drawMatches(
+            ref_img_color, kp_ref,
+            frame, kp_bilateral,
+            good_bilateral, None,
+            matchColor=COLOR_G, flags=draw_flags
+        )
+
+        # --- 8. LABEL ---
+        cv2.putText(match_gauss,
+                    f"ORB + Gaussian",
+                    (10, CAM_H - 15), font, 0.65, COLOR_Y, 2, cv2.LINE_AA)
         
-        # --- FEATURE MATCHING ---
-        matches = bf.match(des_ref, des_frame)
+        jml_kp_gauss = len(kp_gauss) if kp_gauss else 0
+        cv2.putText(match_gauss, f"Keypoints: {jml_kp_gauss}", (20, REF_H + 30), font, 0.6, (255,255,255), 2)
+        cv2.putText(match_gauss, f"Good Matches: {len(good_gauss)}", (20, REF_H + 60), font, 0.6, (255,255,255), 2)
+        cv2.putText(match_gauss, f"Inlier Ratio: {inlier_ratio_gauss:.1f}%", (20, REF_H + 90), font, 0.6, (255,255,255), 2)
+
+        cv2.putText(match_bilateral,
+                    f"ORB + Bilateral",
+                    (10, CAM_H - 15), font, 0.65, COLOR_O, 2, cv2.LINE_AA)
+
+        jml_kp_bilat = len(kp_bilateral) if kp_bilateral else 0
+        cv2.putText(match_bilateral, f"Keypoints: {jml_kp_bilat}", (20, REF_H + 30), font, 0.6, (255,255,255), 2)
+        cv2.putText(match_bilateral, f"Good Matches: {len(good_bilateral)}", (20, REF_H + 60), font, 0.6, (255,255,255), 2)
+        cv2.putText(match_bilateral, f"Inlier Ratio: {inlier_ratio_bilateral:.1f}%", (20, REF_H + 90), font, 0.6, (255,255,255), 2)
+
+        # --- 9. GABUNG HORIZONTAL ---
+        gabungan = cv2.hconcat([match_gauss, match_bilateral])
         
-        # Urutkan berdasarkan jarak (distance). Jarak terkecil = paling mirip
-        matches = sorted(matches, key=lambda x: x.distance)
+        # Tampilkan FPS di ujung kiri atas gambar gabungan
+        cv2.putText(gabungan, f"FPS: {int(fps)}", (20, 40), font, 1.0, (0, 255, 0), 2, cv2.LINE_AA)
 
-        # Ambil 15% kecocokan terbaik (Good Matches) untuk stabilitas
-        good_matches = matches[:int(len(matches) * 0.15)]
+        # Scale down agar muat di layar
+        h, w = gabungan.shape[:2]
+        scale = min(1.0, 1400 / w, 700 / h)
+        if scale < 1.0:
+            gabungan = cv2.resize(gabungan, (int(w * scale), int(h * scale)))
 
-        # --- ESTIMASI HOMOGRAPHY & BOUNDING BOX ---
-        # Tentukan batas minimal titik kecocokan (misal: butuh minimal 15 titik agar diakui sebagai uang)
-        MIN_MATCH_COUNT = 15 
-        matchesMask = None
+        cv2.imshow('ORB Matching: Gaussian vs Bilateral', gabungan)
 
-        if len(good_matches) > MIN_MATCH_COUNT:
-            # Ambil koordinat (x, y) dari titik-titik yang cocok
-            src_pts = np.float32([kp_ref[m.queryIdx].pt for m in good_matches]).reshape(-1, 1, 2)
-            dst_pts = np.float32([kp_frame[m.trainIdx].pt for m in good_matches]).reshape(-1, 1, 2)
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
 
-            # Hitung matriks Homography menggunakan RANSAC untuk membuang outlier (titik salah)
-            M, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
+    cap.release()
+    cv2.destroyAllWindows()
 
-            # Jika matriks ditemukan, gambar kotak pelacakan
-            if M is not None:
-                matchesMask = mask.ravel().tolist() # Simpan titik-titik valid (inliers)
-                # Proyeksikan 4 titik sudut template ke posisi uang di kamera
-                dst_pts_projected = cv2.perspectiveTransform(template_pts, M)
-
-                # Gambar kotak hijau (Bounding Box) di sekeliling uang
-                frame = cv2.polylines(frame, [np.int32(dst_pts_projected)], True, (0, 255, 0), 3, cv2.LINE_AA)
-                
-                # Tambahkan label teks
-                cv2.putText(frame, "Uang Terdeteksi", (int(dst_pts_projected[0][0][0]), int(dst_pts_projected[0][0][1]) - 10),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-        else:
-            cv2.putText(frame, "Mencari Uang...", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-            
-        if matchesMask is None:
-            matchesMask = [0] * len(good_matches) # Sembunyikan garis jika tidak valid
-
-        # --- VISUALISASI TITIK (Aktifkan untuk melihat garis pencocokan dan template) ---
-        display_frame = cv2.drawMatches(img_ref, kp_ref, frame, kp_frame, good_matches, None, matchColor=(0,255,0), singlePointColor=(255,0,0), matchesMask=matchesMask, flags=cv2.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS)
-    else:
-        display_frame = frame
-
-    # Tampilkan video hasil
-    cv2.imshow('ORB Real-Time Rupiah Tracker', display_frame)
-
-    # Tekan 'q' untuk keluar
-    if cv2.waitKey(1) & 0xFF == ord('q'):
-        break
-
-# Bersihkan dan tutup kamera
-cap.release()
-cv2.destroyAllWindows()
+if __name__ == '__main__':
+    main()

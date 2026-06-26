@@ -1,6 +1,7 @@
 import cv2
 import numpy as np
 import os
+import time
 
 # ==========================================
 # 1. INISIALISASI & PERSIAPAN TEMPLATE
@@ -34,7 +35,7 @@ dimensi_baru = (400, int(tinggi_asli * rasio))
 img_ref = cv2.resize(img_ref, dimensi_baru, interpolation=cv2.INTER_AREA)
 # ==========================================
 
-# --- PREPROCESSING TEMPLATE (Materi Dosen) ---
+# --- PREPROCESSING TEMPLATE ---
 # 1. Grayscale
 gray_ref = cv2.cvtColor(img_ref, cv2.COLOR_BGR2GRAY)
 # 2. CLAHE (Contrast Limited Adaptive Histogram Equalization)
@@ -98,6 +99,9 @@ def track_sift(frame, filter_name, ref_img, ref_kp, ref_des, filter_fn, label_co
     # Ekstrak fitur dari frame kamera saat ini
     kp_frame, des_frame = sift.detectAndCompute(gray_frame, None)
 
+    jml_kp = len(kp_frame) if kp_frame else 0
+    jml_good = 0
+    inlier_ratio = 0.0
     matched_pts = None
     matched_frame_pts = None
     match_vis = None
@@ -110,6 +114,7 @@ def track_sift(frame, filter_name, ref_img, ref_kp, ref_des, filter_fn, label_co
         for m, n in knn_matches:
             if m.distance < 0.75 * n.distance:
                 good_matches.append(m)
+        jml_good = len(good_matches)
 
         # --- ESTIMASI HOMOGRAPHY & BOUNDING BOX ---
         MIN_MATCH_COUNT = 15
@@ -119,6 +124,8 @@ def track_sift(frame, filter_name, ref_img, ref_kp, ref_des, filter_fn, label_co
 
             M, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
             if M is not None:
+                inliers = np.sum(mask)
+                inlier_ratio = (inliers / jml_good) * 100 if jml_good > 0 else 0
                 dst_pts_projected = cv2.perspectiveTransform(template_pts, M)
                 matched_pts = [ref_kp[m.queryIdx].pt for m in good_matches]
                 matched_frame_pts = [kp_frame[m.trainIdx].pt for m in good_matches]
@@ -143,11 +150,15 @@ def track_sift(frame, filter_name, ref_img, ref_kp, ref_des, filter_fn, label_co
         if state["hold"] > 0 and state["last_box"] is not None:
             state["hold"] -= 1
             frame_out = cv2.polylines(frame_out, [np.int32(state["last_box"])], True, label_color, BOX_THICKNESS, cv2.LINE_AA)
-            cv2.putText(frame_out, "Tracking...", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, label_color, 2)
+            cv2.putText(frame_out, "Tracking...", (20, thumb_h + 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, label_color, 2)
             matched_pts = state["last_pts"]
             matched_frame_pts = state.get("last_frame_pts")
         else:
-            cv2.putText(frame_out, "Mencari Uang...", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+            cv2.putText(frame_out, "Mencari Uang...", (20, thumb_h + 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+
+    cv2.putText(frame_out, f"Keypoints: {jml_kp}", (20, thumb_h + 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 2)
+    cv2.putText(frame_out, f"Good Matches: {jml_good}", (20, thumb_h + 90), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 2)
+    cv2.putText(frame_out, f"Inlier Ratio: {inlier_ratio:.1f}%", (20, thumb_h + 120), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 2)
 
     cv2.putText(frame_out, filter_name, (20, frame_out.shape[0] - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.7, label_color, 2)
     return frame_out, matched_pts, matched_frame_pts, match_vis
@@ -161,13 +172,16 @@ state_gauss = {"last_box": None, "last_pts": None, "last_frame_pts": None, "last
 state_bilat = {"last_box": None, "last_pts": None, "last_frame_pts": None, "last_match_vis": None, "hold": 0}
 
 print("Kamera aktif. Tekan 'q' pada jendela video untuk keluar.")
+prev_time = time.time()
 
 while True:
     ret, frame = cap.read()
     if not ret:
         print("Gagal mengambil frame dari kamera.")
         break
-
+    curr_time = time.time()
+    fps = 1 / (curr_time - prev_time) if (curr_time - prev_time) > 0 else 0
+    prev_time = curr_time
     # Flip frame secara horizontal agar menjadi cermin (mirror)
     frame = cv2.flip(frame, 1)
 
@@ -210,6 +224,8 @@ while True:
 
     # Gabungkan side-by-side agar terlihat dalam satu window
     display_frame = np.hstack([frame_gauss, frame_bilat])
+    cv2.putText(display_frame, f"FPS: {int(fps)}", (display_frame.shape[1]//2 - 60, 40), 
+                cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 3)
 
     # Tampilkan video hasil
     cv2.imshow('SIFT Gaussian vs Bilateral', display_frame)
